@@ -1,0 +1,465 @@
+---
+title: "Gastroenteritis metagenomics in FINRISK 2002"
+author: "Joonatan Palmu"
+date: "`r format(Sys.time(), '%d.%m.%Y')`"
+output:
+    rmdformats::html_clean:
+        self_contained: true
+        thumbnails: false
+        lightbox: true
+        gallery: true
+---
+
+# Setup
+
+```{css, echo = FALSE}
+.main-container {
+  max-width:1920px !important;
+}
+```
+
+```{r libraries}
+library(magrittr)
+```
+
+```{r load functions}
+devtools::load_all(quiet = TRUE)
+```
+
+## Command line arguments
+
+```{r}
+args <- list(
+  optparse::make_option("--detection", type = "numeric", default = 0.1/100, help = "Detection limit [default %default]"),
+  optparse::make_option("--prevalence", type = "numeric", default = 1/100, help = "Prevalence limit [default %default]"),
+  optparse::make_option("--beta", action="store_false", default = TRUE, help = "No beta diversity [default %default]")) %>% 
+  optparse::OptionParser(option_list = .) %>%
+  optparse::parse_args()
+```
+
+```{r, echo = FALSE}
+args %>% tibble::enframe(name = "Option", value = "Argument") %>% DT::datatable(caption = "Command line arguments")
+```
+
+
+## Formatting options
+
+```{r options, echo = FALSE}
+knitr::opts_chunk$set(include = TRUE, echo = TRUE, message = FALSE, results='asis', cache=FALSE, warning=FALSE, error = TRUE)
+```
+
+```{r define ggplot settings}
+myggsave <- myggsavefactory()
+```
+
+```{r}
+{ ggthemes::theme_tufte(base_family = "sans", base_size = 12) +
+    ggplot2::theme(axis.text = ggplot2::element_text(colour = "black", size = 10),
+                   panel.border = ggplot2::element_rect(colour = "black", fill = NA),
+                   panel.background = ggplot2::element_rect(fill = "white", colour = "white"),
+                   plot.background = ggplot2::element_rect(fill = "white", colour = "white"),
+                   aspect.ratio = 1) } %>%
+  ggplot2::theme_set()
+```
+    
+# Data definitions
+
+```{r}
+vars <- list(BL_AGE = "Age",
+             MEN = "Men",
+             BMI = "BMI",
+             CURR_SMOKE = "Smoking",
+             ALKI2_FR02 = "Alcohol",
+             Q57X = "Physical activity",
+             BL_USE_RX_J01 = "Antibiotics",
+             PREVAL_DIAB = "Diabetes",
+             PREVAL_CVD = "CVD",
+             PREVAL_CR_ANYCANC = "Cancer",
+             HYPERT_AHA = "Hypertension",
+             PREVAL_PULMONARY = "Pulmonary",
+             PREVAL_GASTRO = "Gastrointestinal",
+             shannon  = "Shannon diversity",
+             butyrates = "Butyrate producers",
+             EAST = "Eastern Finland",
+             total_reads = "Read counts")  
+```
+
+```{r}
+tse <- readRDS("data/tse_mgs-20241118_104759.rds") %>%
+  tse_filter(GRAVID %in% c(1, NA), BL_USE_RX_J01_1mo %in% c(0, NA), total_reads > 50000) %>% 
+  mia::transformAssay(assay.type = "counts", method = "relabundance") %>% 
+  mia::estimateDiversity(assay.type = "counts", index = "shannon", name = "shannon") %>%
+  tse_add_butyrate_producers(transformation = "clr", pseudocount = 1) %>% 
+  tse_mutate(PREVAL_PULMONARY = dplyr::if_else(PREVAL_COPD == 1 | PREVAL_ASTHMA == 1, 1L, 0L),
+             PREVAL_GASTRO = dplyr::if_else(PREVAL_LIVERDIS == 1 | PREVAL_IBD == 1 | PREVAL_K11_COELIAC ==1, 1L, 0L), 
+             GASTROENTERITIS_AGEDIFF = BL1ST_AB1_GASTROENTERITIS_NOS_AGE - BL_AGE,
+             INCIDENT_GASTROENTERITIS = BL1ST_AB1_GASTROENTERITIS_NOS) %>%
+  tse_select(INCIDENT_GASTROENTERITIS, GASTROENTERITIS_AGEDIFF, names(vars),) %>%
+  tse_normalize_factors() %>%
+  tse_filter(dplyr::across(names(vars), ~!is.na(.x)))
+```
+
+# Characteristics
+
+```{r, echo = FALSE}
+tse %>%
+  tse_mutate(EAST = ifelse(EAST == 1, "Eastern Finland", "Western Finland")) %>%
+  mytableone(vars, fo = ~ . | EAST)
+```
+
+# Alpha diversity
+
+## Univariate
+
+```{r}
+tse %>%
+  tse_meta(rownames = FALSE) %>% 
+  survival::coxph(my_surv(GASTROENTERITIS_AGEDIFF, INCIDENT_GASTROENTERITIS) ~ scale(shannon),
+                  data = .) %>% 
+  broom::tidy() %>%
+  round_numeric_columns() %>% 
+  DT::datatable(caption = "Univariate alpha diversity")
+```
+
+## Multivariate
+
+```{r}
+tse %>%
+  tse_meta(rownames = FALSE) %>% 
+  survival::coxph(my_surv(GASTROENTERITIS_AGEDIFF, INCIDENT_GASTROENTERITIS) ~
+                    scale(shannon) + BL_AGE + MEN + BMI + CURR_SMOKE + ALKI2_FR02 + Q57X +
+                    BL_USE_RX_J01 + PREVAL_DIAB + PREVAL_CVD + PREVAL_CR_ANYCANC + HYPERT_AHA +
+                    PREVAL_PULMONARY + PREVAL_GASTRO, data = .) %>% 
+  broom::tidy() %>%
+  round_numeric_columns() %>% 
+  DT::datatable(caption = "Multivariate alpha diversity")
+```
+
+# Butyrate producers
+
+## Univariate
+
+```{r}
+tse %>%
+  tse_meta(rownames = FALSE) %>% 
+survival::coxph(my_surv(GASTROENTERITIS_AGEDIFF, INCIDENT_GASTROENTERITIS) ~ scale(butyrates),
+                  data = .) %>% 
+  broom::tidy() %>%
+  round_numeric_columns() %>% 
+  DT::datatable(caption = "Univariatea butyrate producers")
+```
+
+## Multivariate
+
+```{r}
+tse %>%
+  tse_meta(rownames = FALSE) %>% 
+  survival::coxph(my_surv(GASTROENTERITIS_AGEDIFF, INCIDENT_GASTROENTERITIS) ~
+                    scale(butyrates) + BL_AGE + MEN + BMI + CURR_SMOKE + ALKI2_FR02 + Q57X +
+                    BL_USE_RX_J01 + PREVAL_DIAB + PREVAL_CVD + PREVAL_CR_ANYCANC + HYPERT_AHA +
+                    PREVAL_PULMONARY + PREVAL_GASTRO, data = .) %>% 
+  broom::tidy() %>%
+  round_numeric_columns() %>% 
+  DT::datatable(caption = "Multiariate butyrate producers")
+```
+
+
+# Beta diversity
+
+```{r, eval = args$beta}
+calculate_beta_diversity <- function(tse) {
+  mia::mergeFeaturesByRank(tse, rank = "Species") %>% 
+    mia::transformAssay(method = "relabundance") %>%
+    mia::runRDA(assay.type = "relabundance",
+                formula = assay ~ BL_AGE + MEN + BMI + CURR_SMOKE + ALKI2_FR02 + Q57X +
+                    BL_USE_RX_J01 + PREVAL_DIAB + PREVAL_CVD + PREVAL_CR_ANYCANC + HYPERT_AHA +
+                    PREVAL_PULMONARY + PREVAL_GASTRO + INCIDENT_GASTROENTERITIS,
+                distance = "bray",
+                na.action = na.exclude)
+}
+```
+
+```{r, eval = args$beta}
+tse_species <- compute_or_load_result((\(x) calculate_beta_diversity(tse)), "cache/beta-diversity-gitis.rds")
+```
+
+```{r, eval = args$beta}
+rda_info <- attr(SingleCellExperiment::reducedDim(tse_species, "RDA"), "significance")
+```
+
+## ANOVA model
+
+```{r, eval = args$beta}
+rda_info$permanova %>% 
+  DT::datatable()
+```
+
+## ANOVA assumptions
+
+```{r, eval = args$beta}
+rda_info$homogeneity %>% 
+  DT::datatable()
+```
+
+## RDA plot
+
+```{r, eval = args$beta}
+{ miaViz::plotRDA(tse_species,
+                "RDA",
+                add.vectors = FALSE,
+                add.ellipse = "colour",
+                colour_by = "INCIDENT_GASTROENTERITIS") +
+    ggplot2::scale_colour_manual(name = "Incident gastroenteritis",
+                                 labels = c("0" = "Healthy individual",
+                                            "1" = "Gastroenteritis"),
+                                 values = c("0" = "gray",
+                                            "1" = "black")) } %>% 
+  myggsave("gastroenteritis_rda", width = 10, height = 10)
+```
+
+# Cox's models
+
+## Data creation
+
+```{r}
+df_west <- tse %>%
+  tse_filter(EAST == 0) %>%
+  tse_clinical_subset(rank = "Species",
+                      detection = args$detection,
+                      prevalence = args$prevalence) %>% 
+  tse_melt()
+```
+
+```{r}
+df_east <- tse %>%
+  tse_filter(EAST == 1) %>%
+  tse_clinical_subset(rank = "Species",
+                      detection = args$detection,
+                      prevalence = args$prevalence) %>% 
+  tse_melt()
+```
+
+## Comparing taxa
+
+```{r}
+taxa_west <- df_west %>% colnames %>% stringr::str_subset("GUT_") 
+taxa_east <- df_east %>% colnames %>% stringr::str_subset("GUT_") 
+```
+
+```{r}
+taxa_cox <- intersect(taxa_west, taxa_east)
+```
+
+```{r}
+df_prevalences <- purrr::map_df(c(East = 0, West = 1), ~tse %>% tse_filter(EAST != .x) %>%
+                                mia::getPrevalence(detection = args$detection,
+                                                   as_relative = TRUE,
+                                                   rank = "Species") %>%
+                                tibble::as_tibble(rownames = "taxa") ,
+                                .id = "EAST") %>%
+  dplyr::mutate(taxa = stringr::str_replace_all(taxa, c("^" = "GUT_", " " = "_", "-" = "_"))) %>%
+  dplyr::filter(taxa %in% taxa_cox) %>% 
+  dplyr::rename(prevalence = value)
+```
+
+```{r}
+df_prevalences %>%
+  tidyr::spread(EAST, prevalence) %>% 
+  DT::datatable(caption = "Prevalence of taxa in east and west")
+```
+
+
+## Defining models
+
+```{r}
+cox_model_for_taxon <- function(df, term, fun, rank = NULL) {
+  stopifnot(!missing(df), !missing(term), !missing(fun))
+  { if (is.null(rank)) df else df[[rank]] } %>%
+    dplyr::rename(term := {{term}}) %>% 
+    fun(data = .)
+}
+```
+
+```{r}
+coxph_partial <- purrr::partial(survival::coxph,
+                                formula = my_surv(GASTROENTERITIS_AGEDIFF, INCIDENT_GASTROENTERITIS) ~
+                                  my_scale(term) + BL_AGE + MEN + BMI + CURR_SMOKE + ALKI2_FR02 + Q57X + BL_USE_RX_J01 + PREVAL_DIAB + PREVAL_CVD + PREVAL_CR_ANYCANC + HYPERT_AHA +
+                                    PREVAL_PULMONARY + PREVAL_GASTRO,
+                                ties = "breslow") %>%
+  purrr::possibly()
+```
+
+## Perform Cox's models
+
+## Discovery sample
+
+```{r}
+df_cox_results_east <- tibble::tibble(taxa = taxa_cox) %>%
+  dplyr::mutate(results = purrr::map(taxa, ~cox_model_for_taxon(df_east, .x, coxph_partial), .progress = TRUE)) %>%
+  dplyr::filter(!is.null(results)) %>%
+  dplyr::mutate(tidy = purrr::map(results, ~broom::tidy(.x, conf.int = TRUE))) %>% 
+  tidyr::unnest(tidy) %>%
+  dplyr::filter(stringr::str_detect(term, "term")) %>% 
+  dplyr::mutate(qval = p.adjust(p.value, method = "BH"))
+```
+
+```{r}
+df_cox_results_east %>%
+  dplyr::select(-results) %>%
+  dplyr::arrange(qval) %>% 
+  DT::datatable(caption = "Cox model results in discovery sample")
+```
+
+## Testing sample
+
+```{r}
+df_cox_results_west <- df_cox_results_east %>%
+  dplyr::filter(qval < 0.05) %>%
+  dplyr::select(taxa) %>%
+  dplyr::mutate(model = purrr:::map(taxa, ~coxph_partial(dplyr::rename(df_west, term = .x)))) %>%
+  dplyr::mutate(tidy = purrr:::map(model, ~broom::tidy(.x, conf.int = TRUE))) %>%
+  tidyr::unnest(tidy) %>%
+  dplyr::filter(term == "my_scale(term)")
+```
+
+```{r}
+df_cox_results_west %>%
+  DT::datatable(caption = "Cox model results in test sample")
+```
+
+## Summary
+
+```{r, echo = FALSE}
+{ dplyr::bind_rows(df_cox_results_east %>% dplyr::filter(qval < 0.05) %>% dplyr::mutate(model = "Discovery", EAST = "East"),
+                   df_cox_results_west %>% dplyr::mutate(model = "Testing", EAST = "West")) %>%
+    dplyr::left_join(., df_prevalences, by = c("taxa", "EAST")) %>% 
+    dplyr::mutate(dplyr::across(c(estimate, conf.low, conf.high), exp)) %>% 
+    dplyr::mutate(taxa = stringr::str_replace_all(taxa, c("GUT_" = "", "_" = " "))) %>%
+    dplyr::mutate(model = forcats::fct_relevel(model, c("Testing", "Discovery"))) %>%
+    dplyr::mutate(taxa = forcats::fct_rev(taxa)) %>%
+    dplyr::mutate(mean_ci = sprintf("%1.2f (%1.2f–%1.2f)", estimate, conf.low, conf.high)) %>% 
+    dplyr::mutate(prevalence = sprintf("%1.1f%%", prevalence*100)) %>% 
+    ggplot2::ggplot(ggplot2::aes(x = taxa, y = estimate, col = model, group = model, ymin = conf.low, ymax = conf.high)) +
+    ggplot2::geom_point(size = 2, stroke = 1.5, position = ggplot2::position_dodge(width = 0.6)) +
+    ggplot2::geom_errorbar(ggplot2::aes(),
+                           width = 0.2,
+                           position =  ggplot2::position_dodge(width = 0.6)) +
+    ggplot2::geom_text(ggplot2::aes(label = mean_ci, y = 2.5),
+                       position = ggplot2::position_dodge(width = 0.6)) +
+    ggplot2::geom_text(ggplot2::aes(label = prevalence, y = 3.3),
+                       position = ggplot2::position_dodge(width = 0.6)) +
+    ggplot2::scale_x_discrete(name = NULL, expand = c(0.05, 0.05)) +
+    ggplot2::scale_y_continuous(name = NULL,
+                                breaks = c(0.5, 1, 1.5, 2.5, 3.3),
+                                labels = c(0.5, 1, 1.5, "HR and 95% CI", "Prevalence"),
+                                limits = c(0.3, 3.5)) +
+    ggplot2::scale_colour_manual(name = NULL,
+                                 breaks = c("Discovery", "Testing"),
+                                 labels = c(glue::glue("Discovery cohort:\nEastern Finland\n(N={nrow(df_east)})"),
+                                            glue::glue("Validation cohort:\nWestern Finland\n(N={nrow(df_west)})")),
+                                 values = c("#000000", "#00008B")) +
+    ggplot2::geom_hline(yintercept = 1, linetype = "dashed") + 
+    ggplot2::coord_flip() +
+    ggplot2::guides(color = ggplot2::guide_legend(keyheight = 3, default.unit = "cm")) +
+    ggplot2::theme(axis.text.y = ggplot2::element_text(face = "italic", hjust = 1),
+                   legend.text = ggplot2::element_text(lineheight = 1.3, size = 12, hjust = 0.5),
+                   legend.spacing.y = ggplot2::unit(0.5, 'cm'))} %>%
+  myggsave("gastroenteritis_cox", width = 10, height = 6)
+```
+
+
+# Risk score
+
+```{r}
+glmnet_x <- df_cox_results_east %>%
+  dplyr::filter(p.value < 0.05) %>%
+  dplyr::pull(taxa) %>% 
+  stringr::str_c(collapse = ' + ') %>% 
+  { glue::glue("my_surv(GASTROENTERITIS_AGEDIFF, INCIDENT_GASTROENTERITIS) ~ 0 + {.}") } %>%
+  as.formula %>%
+  model.matrix(data = df_east)
+```
+
+```{r}
+glmnet_y <- df_east %$% my_surv(GASTROENTERITIS_AGEDIFF, INCIDENT_GASTROENTERITIS)
+```
+
+```{r}
+set.seed(2024)
+cox_model <- glmnet::cv.glmnet(glmnet_x,
+                               glmnet_y,
+                               family = "cox",
+                               maxit = 100000,
+                               nfolds = 10,
+                               alpha = 1)
+```
+
+## Implement risk score
+
+```{r}
+df_glmnet <- coef(cox_model, s = "lambda.min") %>%
+  as.data.frame.matrix() %>% 
+  tibble::as_tibble(rownames = "term") %>%
+  dplyr::filter(stringr::str_detect(term, "GUT_")) %>%
+  dplyr::mutate(value = round(`1`*100, 0)) %>% 
+  dplyr::filter(abs(value) > 0) %>%
+  dplyr::select(term, value)
+```
+
+```{r}
+df_glmnet %>% DT::datatable()
+```
+
+
+### Formula coefficients
+
+```{r}
+{ df_glmnet %>%
+    dplyr::mutate(term = stringr::str_replace_all(term, c("GUT_" = "", "_" = " "))) %>% 
+    dplyr::mutate(term = forcats::fct_rev(term)) %>% 
+    ggplot2::ggplot(ggplot2::aes(x = term, y = value)) +
+    ggplot2::geom_bar(stat = "identity", color = "black") +
+    ggplot2::scale_x_discrete(name = NULL, expand = c(0, 0)) +
+    ggplot2::scale_y_continuous(name = NULL,
+                                expand = c(0.01, 0.01),
+                                breaks=scales::pretty_breaks(),
+                                limits = ~max(abs(.)) %>% c(-., .)) +
+    ggplot2::geom_hline(yintercept = 0, linetype = "dashed") +
+    ggplot2::coord_flip() +
+    ggplot2::theme(axis.text.y = ggplot2::element_text(face = "italic", hjust = 1),
+                   legend.position = "none",
+                   panel.grid.major = ggplot2::element_blank(),
+                   panel.grid.minor = ggplot2::element_blank(),
+                   plot.margin = ggplot2::margin(1, 5, 1, 1, "mm")) } %>% 
+  myggsave(name = "gastroenteritis_risk_features", width = 10, height = 5)
+```
+
+### Risk formula
+
+```{r}
+fo <- df_glmnet %>%
+  dplyr::mutate(fo = glue::glue("({value}*{term})")) %>%
+  dplyr::pull(fo) %>%
+  stringr::str_c(collapse = "+")
+```
+
+#### Discovery
+
+```{r}
+df_east %>% 
+  dplyr::mutate(risk := rlang::eval_tidy(rlang::parse_expr(fo))) %>% 
+  cox_model_for_taxon(term = "risk", fun = coxph_partial) %>% 
+  broom::tidy(exponentiate = TRUE, conf.int = TRUE) %>% 
+  DT::datatable(caption = "Risk score full training model")
+```
+
+#### Validation
+
+```{r}
+df_west %>%
+  dplyr::mutate(risk := rlang::eval_tidy(rlang::parse_expr(fo))) %>%
+  cox_model_for_taxon(term = "risk", fun = coxph_partial) %>% 
+  broom::tidy(exponentiate = TRUE, conf.int = TRUE) %>% 
+  DT::datatable(caption = "Risk score full testing model")
+```
+
