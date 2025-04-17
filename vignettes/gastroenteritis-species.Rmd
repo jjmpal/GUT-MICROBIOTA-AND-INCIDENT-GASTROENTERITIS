@@ -85,7 +85,7 @@ vars <- list(BL_AGE = "Age",
 ```
 
 ```{r}
-tse <- readRDS("data/tse_mgs-20241118_104759.rds") %>%
+tse <- readRDS("../tse_mgs-20241118_104759.rds") %>%
   tse_filter(GRAVID %in% c(1, NA), BL_USE_RX_J01_1mo %in% c(0, NA), total_reads > 50000) %>% 
   mia::transformAssay(assay.type = "counts", method = "relabundance") %>% 
   mia::estimateDiversity(assay.type = "counts", index = "shannon", name = "shannon") %>%
@@ -116,7 +116,7 @@ tse %>%
   tse_meta(rownames = FALSE) %>% 
   survival::coxph(my_surv(GASTROENTERITIS_AGEDIFF, INCIDENT_GASTROENTERITIS) ~ scale(shannon),
                   data = .) %>% 
-  broom::tidy() %>%
+  broom::tidy(exponentiate = TRUE, conf.int = TRUE) %>%
   round_numeric_columns() %>% 
   DT::datatable(caption = "Univariate alpha diversity")
 ```
@@ -130,7 +130,7 @@ tse %>%
                     scale(shannon) + BL_AGE + MEN + BMI + CURR_SMOKE + ALKI2_FR02 + Q57X +
                     BL_USE_RX_J01 + PREVAL_DIAB + PREVAL_CVD + PREVAL_CR_ANYCANC + HYPERT_AHA +
                     PREVAL_PULMONARY + PREVAL_GASTRO, data = .) %>% 
-  broom::tidy() %>%
+  broom::tidy(exponentiate = TRUE, conf.int = TRUE) %>%
   round_numeric_columns() %>% 
   DT::datatable(caption = "Multivariate alpha diversity")
 ```
@@ -144,7 +144,7 @@ tse %>%
   tse_meta(rownames = FALSE) %>% 
 survival::coxph(my_surv(GASTROENTERITIS_AGEDIFF, INCIDENT_GASTROENTERITIS) ~ scale(butyrates),
                   data = .) %>% 
-  broom::tidy() %>%
+  broom::tidy(exponentiate = TRUE, conf.int = TRUE) %>%
   round_numeric_columns() %>% 
   DT::datatable(caption = "Univariatea butyrate producers")
 ```
@@ -158,7 +158,7 @@ tse %>%
                     scale(butyrates) + BL_AGE + MEN + BMI + CURR_SMOKE + ALKI2_FR02 + Q57X +
                     BL_USE_RX_J01 + PREVAL_DIAB + PREVAL_CVD + PREVAL_CR_ANYCANC + HYPERT_AHA +
                     PREVAL_PULMONARY + PREVAL_GASTRO, data = .) %>% 
-  broom::tidy() %>%
+  broom::tidy(exponentiate = TRUE, conf.int = TRUE) %>%
   round_numeric_columns() %>% 
   DT::datatable(caption = "Multiariate butyrate producers")
 ```
@@ -216,6 +216,7 @@ rda_info$homogeneity %>%
                                             "1" = "black")) } %>% 
   myggsave("gastroenteritis_rda", width = 10, height = 10)
 ```
+
 
 # Cox's models
 
@@ -327,10 +328,93 @@ df_cox_results_west %>%
   DT::datatable(caption = "Cox model results in test sample")
 ```
 
+
+# Row Tree
+```{r}
+sig_taxa <- c("Acetatifactor sp900066565","An92 sp900199495",
+              "Blautia_A_141780 ornithocaccae",    "Butyricicoccus_A_77030 sp900604335",
+              "Citrobacter_A_692098 werkmanii",    "Enterobacter_B_713587 kobei_713570",
+              "Enterocloster clostridioformis",    "Escherichia albertii",
+              "Escherichia coli",               "Escherichia marmotae",
+              "Escherichia ruysiae",               "Ruminococcus_C_58660 callidus",
+              "Salmonella enterica_690914",         "Shigella boydii",
+              "Shigella sonnei")
+
+# Subset by prevalent taxa
+tse_sp <- mia::agglomerateByRank(tse, rank = "Species", update.tree = TRUE)
+tse_tree <- tse_sp [sig_taxa, ]
+tse_tree <- TreeSummarizedExperiment::subsetByLeaf(tse_tree, rowLeaf = rownames(tse_tree))
+
+
+# Get taxonomic(Hierarchy) tree 
+  taxa_tree_ob <- mia::getHierarchyTree(tse_tree)
+  
+  # Clean tips and nodes labels 
+  taxa_tree_ob$tip.label <- stringr::str_replace(taxa_tree_ob$tip.label, "Species:", "")
+  taxa_tree_ob$node.label <- stringr::str_replace(taxa_tree_ob$node.label, ":", " ")
+
+new_names <- c("....................Acetatifactor sp900066565", 
+               ".............Blautia A 141780 ornithocaccae",
+               ".................Enterocloster clostridioformis", 
+               "...Butyricicoccus A 77030 sp900604335",
+               "................................An92 sp900199495", 
+               "............Ruminococcus C 58660 callidus",
+               "............Citrobacter A 692098 werkmanii", 
+               "...Enterobacter B 713587 kobei 713570",
+               ".................................Escherichia albertii", 
+               "......................................Escherichia coli",
+               "............................Escherichia marmotae", 
+               "................................Escherichia ruysiae",
+               "........................................Shigella boydii", 
+               ".......................................Shigella sonnei",
+               "...................Salmonella enterica 690914")
+
+taxa_tree_ob$tip.label <- new_names
+
+taxa_tree_plot <- ggtree::ggtree(taxa_tree_ob) + 
+  ggtree::geom_tiplab(size = 3,
+                      align = TRUE, 
+                      fontface = "italic",
+                      family = "Arial",
+                      vjust=0) + 
+  ggtree::geom_nodelab(ggplot2::aes(label = ifelse(label %in% c("Family Enterobacteriaceae_A", "Order Oscillospirales", "Family Lachnospiraceae", "Class Clostridia_258483", "Genus Escherichia_710834"), label,"")), size = 2.25, 
+                                  hjust =1.05, 
+                                  vjust=-0.25,
+                                  family = "Arial") + 
+  ggplot2::xlim(0,0.98) 
+
+taxa_tree_plot
+
+ggtree::ggsave("tree_plot.png", width = 6.25, height = 4, dpi = 300)
+
+
+
+```
+
+
+
 ## Summary
 
 ```{r, echo = FALSE}
-{ dplyr::bind_rows(df_cox_results_east %>% dplyr::filter(qval < 0.05) %>% dplyr::mutate(model = "Discovery", EAST = "East"),
+
+new_order <- c("Acetatifactor sp900066565", 
+               "Blautia A 141780 ornithocaccae",
+               "Enterocloster clostridioformis", 
+               "Butyricicoccus A 77030 sp900604335",
+               "An92 sp900199495", 
+               "Ruminococcus C 58660 callidus",
+               "Citrobacter A 692098 werkmanii", 
+               "Enterobacter B 713587 kobei 713570",
+               "Salmonella enterica 690914",
+               "Escherichia albertii",
+               "Escherichia coli",
+               "Escherichia marmotae", 
+               "Escherichia ruysiae",
+               "Shigella boydii", 
+               "Shigella sonnei"
+              ) 
+
+fplot <- { dplyr::bind_rows(df_cox_results_east %>% dplyr::filter(qval < 0.05) %>% dplyr::mutate(model = "Discovery", EAST = "East"),
                    df_cox_results_west %>% dplyr::mutate(model = "Testing", EAST = "West")) %>%
     dplyr::left_join(., df_prevalences, by = c("taxa", "EAST")) %>% 
     dplyr::mutate(dplyr::across(c(estimate, conf.low, conf.high), exp)) %>% 
@@ -339,16 +423,17 @@ df_cox_results_west %>%
     dplyr::mutate(taxa = forcats::fct_rev(taxa)) %>%
     dplyr::mutate(mean_ci = sprintf("%1.2f (%1.2f–%1.2f)", estimate, conf.low, conf.high)) %>% 
     dplyr::mutate(prevalence = sprintf("%1.1f%%", prevalence*100)) %>% 
+    dplyr::mutate(taxa = factor(taxa, levels = new_order)) %>% 
     ggplot2::ggplot(ggplot2::aes(x = taxa, y = estimate, col = model, group = model, ymin = conf.low, ymax = conf.high)) +
-    ggplot2::geom_point(size = 2, stroke = 1.5, position = ggplot2::position_dodge(width = 0.6)) +
+    ggplot2::geom_point(size = 2, stroke = 1.5, position = ggplot2::position_dodge(width = 0.8)) +
     ggplot2::geom_errorbar(ggplot2::aes(),
                            width = 0.2,
                            position =  ggplot2::position_dodge(width = 0.6)) +
     ggplot2::geom_text(ggplot2::aes(label = mean_ci, y = 2.5),
-                       position = ggplot2::position_dodge(width = 0.6)) +
+                       position = ggplot2::position_dodge(width = 0.8)) +
     ggplot2::geom_text(ggplot2::aes(label = prevalence, y = 3.3),
-                       position = ggplot2::position_dodge(width = 0.6)) +
-    ggplot2::scale_x_discrete(name = NULL, expand = c(0.05, 0.05)) +
+                       position = ggplot2::position_dodge(width = 0.8)) +
+    ggplot2::scale_x_discrete(name = NULL) +
     ggplot2::scale_y_continuous(name = NULL,
                                 breaks = c(0.5, 1, 1.5, 2.5, 3.3),
                                 labels = c(0.5, 1, 1.5, "HR and 95% CI", "Prevalence"),
@@ -361,10 +446,18 @@ df_cox_results_west %>%
     ggplot2::geom_hline(yintercept = 1, linetype = "dashed") + 
     ggplot2::coord_flip() +
     ggplot2::guides(color = ggplot2::guide_legend(keyheight = 3, default.unit = "cm")) +
-    ggplot2::theme(axis.text.y = ggplot2::element_text(face = "italic", hjust = 1),
+    ggplot2::theme(axis.text.y = ggplot2::element_blank(),
                    legend.text = ggplot2::element_text(lineheight = 1.3, size = 12, hjust = 0.5),
-                   legend.spacing.y = ggplot2::unit(0.5, 'cm'))} %>%
-  myggsave("gastroenteritis_cox", width = 10, height = 6)
+                   legend.spacing.y = ggplot2::unit(0.5, 'cm'))} 
+
+
+taxa_tree_plot <- taxa_tree_plot + ggplot2::theme(plot.margin = ggplot2::unit(c(0, 0, 0, 0), "cm"))
+fplot <- fplot + ggplot2::theme(plot.margin = ggplot2::unit(c(0, 0, 0, 0), "cm"))
+combined_plot <- patchwork::wrap_plots(taxa_tree_plot, fplot, ncol = 2)
+  
+
+ggplot2::ggsave("gastroenteritis_cox.png", plot = combined_plot, width = 12.25, height = 5, dpi = 400) 
+
 ```
 
 
