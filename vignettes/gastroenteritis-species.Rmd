@@ -329,6 +329,228 @@ df_cox_results_west %>%
 ```
 
 
+# Procces the pathway data
+```{r}
+library(mia)
+library(dplyr)
+library(tibble)
+library(tidyr)
+library(readr)
+library(purrr)
+library(survival)
+library(stringr)
+library(writexl)
+
+# Functional pathways from metaCyc
+joined_pathabundance <- read.delim("/home/diabhass/Projects/SD-Connect/project_2013220/Hassan/joined_pathabundance.tsv")
+# Matching sampleID from functional data to metadata
+
+  # Convert filtered colData to data frame
+  tse_subset_coldata <- as.data.frame(colData(tse))
+  
+  #rownames to column called "Barcode"
+  tse_subset_coldata <- tse_subset_coldata %>% rownames_to_column("Barcode")
+
+  # Get the column names (excluding the first one, which is probably the path/feature column)
+  sample_names <- colnames(joined_pathabundance)[-1]
+
+  # Clean sample names by removing after .R1
+  cleaned_sample_names <- gsub("\\.R1.*","", sample_names, perl = TRUE)
+  cleaned_sample_names <- gsub("X", "", cleaned_sample_names)
+  cleaned_sample_names <- gsub("\\.", "-", cleaned_sample_names) # !! note to self: remember that we if we have BLANK IDs then we can't change "." to "-"
+
+  # Update the column names with the cleaned sample names
+  colnames(joined_pathabundance)[-1] <- cleaned_sample_names
+  
+
+  # Find the intersection of sample names between the cleaned joined_path_abundance sample names and FINRISK sample data
+  common_samples <- intersect(tse_subset_coldata$Barcode, cleaned_sample_names)
+
+  # Subset the joined_pathabundance file to include only the common samples
+ joined_pathabundance <- joined_pathabundance %>% 
+   select(all_of(c("Pathway", common_samples)))
+ 
+
+
+filter_sp <- joined_pathabundance %>% 
+  filter(rowSums(across(where(is.numeric)))!=0) %>%
+ #grep all pathways that are associated with species 
+  filter(grepl('.s__', Pathway)) %>% 
+  filter(!grepl('superpathway|plants|fungi|yeast|eukaryotes|archaea', Pathway))
+  
+
+# Transpose dataframe
+filter_sp.t <- as.data.frame(t(filter_sp))
+
+# Take first row as colname
+colnames(filter_sp.t) <- filter_sp.t[1,]
+
+# Remove extra row
+filter_sp.t <- filter_sp.t[-1, ] 
+
+# Change from character to numeric
+filter_sp.t <- filter_sp.t %>% mutate_if(is.character, as.numeric) %>%
+  tibble::rownames_to_column("Barcode") 
+ 
+```
+
+
+```{r}
+ # Prevalence filtering
+# You will get a dataframe of prevalent pathways
+filter_sp.10 <- filter_sp.t %>% 
+  select(-1) %>%
+  #mutate to 1 for everything > 0.0000000001
+  mutate(across(everything(), ~ . > 10^-10)) %>%
+  #get proportion
+  summarize(across(everything(), mean)) %>%
+  tidyr::gather(Pathway,prevalence) %>%
+  #filter for pathways that are prevalent in 1%
+  dplyr::filter(prevalence > 0.01)  
+
+# Filtered to only prevalent pathways
+filter_sp_pr <- filter_sp.10 %>% 
+  select(-2) %>%
+  dplyr::inner_join(filter_sp, by="Pathway" ) %>%
+  t() %>%
+  as.data.frame()
+
+# Take first row as colname
+colnames(filter_sp_pr) <- filter_sp_pr[1,]
+# Remove extra row
+filter_sp_pr <- filter_sp_pr[-1, ] 
+# Change from character to numeric
+filter_sp_pr <- filter_sp_pr %>% mutate_if(is.character, as.numeric) %>%
+  tibble::rownames_to_column("Barcode") 
+
+
+```
+
+## Perform Cox's models for pathway analysis (dicho)
+
+```{r}
+
+# Reduce to dichotomous variables (absence / presence)
+
+dicho <- filter_sp_pr %>% 
+  mutate(across(where(is.numeric), ~ ifelse(. > 0, 1, 0)))
+
+#Match samples with tse
+df_dicho <- dplyr::inner_join(dicho, tse_subset_coldata, by = "Barcode")
+
+# Store pathway names (when using species specific)
+pathways <- colnames(df_dicho)[grepl('.s__', colnames(df_dicho))]
+#pathways <- filter_sp_pr %>% select(-Barcode) %>% colnames()
+
+df_cox_results_pathways_dicho <- tibble::tibble(pathways = pathways) %>%
+  dplyr::mutate(results = purrr::map(pathways, ~cox_model_for_taxon(df_dicho, .x, coxph_partial), .progress = TRUE)) %>%
+  dplyr::filter(!is.null(results)) %>%
+  dplyr::mutate(tidy = purrr::map(results, ~broom::tidy(.x, conf.int = TRUE, exponentiate = TRUE))) %>% 
+  tidyr::unnest(tidy) %>%
+  dplyr::filter(stringr::str_detect(term, "term")) %>% 
+  dplyr::mutate(qval = p.adjust(p.value, method = "BH")) %>% 
+  dplyr::arrange(qval)
+
+write_xlsx(df_cox_results_pathways_dicho, "pathways_dich_gastro_species_str.xlsx")
+```
+
+
+## Perform Cox's models for pathway analysis (inverse rank)
+
+```{r}
+
+# Transform to inverse_rank
+
+  # Define the transformation function
+  transform_column <- function(x) {
+  qnorm((rank(x, na.last = "keep") - 0.5) / sum(!is.na(x)))
+  }
+
+  # Apply the transformation to all columns
+  inv_rank <- filter_sp_pr
+  inv_rank[, -1] <- lapply(filter_sp_pr[, -1], transform_column)
+  
+  df_inv_rank <- dplyr::inner_join(inv_rank, tse_subset_coldata, by = "Barcode")
+
+df_cox_results_pathways_inv <- tibble::tibble(pathways = pathways) %>%
+  dplyr::mutate(results = purrr::map(pathways, ~cox_model_for_taxon(df_inv_rank, .x, coxph_partial), .progress = TRUE)) %>%
+  dplyr::filter(!is.null(results)) %>%
+  dplyr::mutate(tidy = purrr::map(results, ~broom::tidy(.x, conf.int = TRUE, exponentiate = TRUE))) %>% 
+  tidyr::unnest(tidy) %>%
+  dplyr::filter(stringr::str_detect(term, "term")) %>% 
+  dplyr::mutate(qval = p.adjust(p.value, method = "BH")) %>% 
+  dplyr::arrange(qval)
+
+write_xlsx(df_cox_results_pathways_inv, "pathways_inv_gastro_species_str.xlsx")
+
+
+```
+
+
+# Visualize the functional analysis results 
+```{r}
+
+##Circular heatmap
+library(ggplot2)
+library(dplyr)
+library(tibble)
+
+pathways_data <- readxl::read_excel("/home/diabhass/Documents/pathways_dich_gastro_species_str.xlsx")
+sigfunc <- pathways_data %>% filter (qval < 0.05)
+
+
+e <-sigfunc %>%
+  group_by(Function) %>%
+  mutate(count = n()) %>%
+  ungroup() %>%
+  mutate(pathway2 = ifelse(count < 2, "Others", Function)) %>%
+  select(-count)%>% 
+  arrange(pathway2, pathways) %>%
+  mutate(pathways = factor(pathways, levels = unique(pathways)))
+
+##Top 20 functional pathway dotplot
+et <- e %>% 
+  arrange(qval) %>%
+  slice_head(n=20) %>%
+  select(pathways, pathway2, estimate, qval)
+
+et$pathways <- sub("\\|g__[^.]+\\.s__", "_", et$pathways)
+et$pathways <- factor(et$pathways, levels = et$pathways[order(et$qval)])
+
+
+funcolor<- c("Amino acid biosynthesis" = "#D53E4F", "Cofactor/Carrier/Vitamin biosynthesis" = "#F46D43", 
+             "Fatty acid and lipid biosynthesis" = "#FDAE61", "Fermentation to short-chain fatty acids" = "#E6F598",
+             "Others" = "#ABDDA4", "Purine nucleotide biosynthesis" = "#66C2A5", 
+             "Sugar nucleotide biosynthesis" = "#3288BD")
+
+# Create the dot plot
+pathways_plot <- ggplot(et, aes(x = estimate, y = pathways, color = pathway2, size = qval)) +
+  geom_point() +
+  scale_size_continuous(range = c(15, 5),
+                        breaks = c(0.005, 0.01)) +
+  labs(
+    x = "Estimate",
+    y = "Pathway",
+    color = "Function",
+    size = "FDR"
+  ) +
+  theme_classic() +
+  scale_color_manual(values = funcolor) +
+  theme(
+    text = element_text(color = "black"),
+    legend.title = element_text(size = 16),
+    legend.text = element_text(size = 14),
+    axis.text = element_text(size = 14),
+    axis.title = element_text(size = 16))
+
+ggsave("pathways_plot_gastro.png", plot = pathways_plot, width = 20, height = 8, dpi = 300)
+
+```
+
+
+
+
+
 # Row Tree
 ```{r}
 sig_taxa <- c("Acetatifactor sp900066565","An92 sp900199495",
